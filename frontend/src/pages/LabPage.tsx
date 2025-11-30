@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { useMemo, useRef, useState, useEffect } from 'react';
 import { Send, Code2, Sparkles, Menu, Play, Terminal, X } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext'; // NOVO: IMPORTADO
 import {
   PERSONAS,
   DEFAULT_MISSION,
@@ -26,7 +27,7 @@ const MODEL_NAME = 'gemini-2.5-flash';
 
 const NavbarLocal: React.FC = () => {
   return (
-    <nav className="absolute top-0 left-0 w-full z-50 px-6 py-4 flex justify-between items-center pointer-events-none">
+    <nav className="absolute top-0 left-0 w-full z-50 !px-6 !py-4 flex justify-between items-center pointer-events-none">
       <div className="flex items-center gap-2 pointer-events-auto cursor-pointer group">
         <div className="p-2 bg-white/10 rounded-full backdrop-blur-sm border border-white/10 group-hover:bg-purple-500/20 transition-colors">
           <Sparkles className="w-5 h-5 text-purple-300" />
@@ -65,7 +66,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
   return (
     <div className="w-full h-full flex flex-col gap-4">
       <div className="flex-1 bg-[#0f172a]/90 rounded-2xl border border-white/10 shadow-2xl flex flex-col overflow-hidden relative backdrop-blur-sm">
-        <div className="flex items-center justify-between px-4 py-3 bg-white/10 border-b border-white/5">
+        <div className="flex items-center justify-between !px-4 !py-3 bg-white/10 border-b border-white/5">
           <div className="flex items-center gap-2">
             <div className="flex gap-1.5">
               <div className="w-3 h-3 rounded-full bg-red-500/50" />
@@ -77,7 +78,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
           <div className="flex gap-2">
             <button
               onClick={runCode}
-              className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-md transition-all shadow-lg shadow-purple-900/20"
+              className="flex items-center gap-2 !px-3 !py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-md transition-all shadow-lg shadow-purple-900/20"
             >
               <Play className="w-3 h-3 fill-current" /> Run Code
             </button>
@@ -122,11 +123,12 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
 };
 
 export default function LabPage() {
-  // Estado principal do fluxo de missões, chat e IDE.
-  const [userId] = useState<string>(() => {
-    if (typeof window === 'undefined') return 'demo-user';
-    return localStorage.getItem('kodarys_user') ?? 'demo-user';
-  });
+  // === CORREÇÃO: USAR CONTEXTO DE AUTH ===
+  const { user } = useAuth();
+  // Se não tiver email, userId fica vazio
+  const userId = user?.email;
+  
+
   const [code, setCode] = useState(STARTER_CODE);
   const [terminalOutput, setTerminalOutput] = useState<string[]>([]);
   const [executionError, setExecutionError] = useState<string | null>(null);
@@ -136,12 +138,15 @@ export default function LabPage() {
   const [pyodide, setPyodide] = useState<any>(null);
   const [pyStatus, setPyStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [chatInput, setChatInput] = useState('');
+  
+  // Mensagens começam vazias ou com initialMessages se for primeira vez
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(initialMessages);
+  
   const [isStreaming, setIsStreaming] = useState(false);
   const [stage, setStage] = useState<Stage>('story');
   const [missionStatus, setMissionStatus] = useState<MissionStatus>('incomplete');
 
-  // Refs auxiliares para controlar placeholder de streaming e rolagem.
+  // Refs auxiliares
   const placeholderIndexRef = useRef<number | null>(null);
   const lastPersonaRef = useRef<PersonaKey>('sygnus');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -153,7 +158,7 @@ export default function LabPage() {
     return new GoogleGenAI({ apiKey });
   }, [apiKey]);
 
-  // Carrega Pyodide (Python no browser) para executar o código real do aluno.
+  // Carrega Pyodide
   useEffect(() => {
     const ensurePyodide = async () => {
       if (typeof window === 'undefined' || pyodide || pyStatus === 'loading') return;
@@ -194,32 +199,58 @@ export default function LabPage() {
     }
   }, [chatMessages, stage]);
 
-  // Busca progresso salvo no backend para restaurar missão/status.
+  // --- CARREGAR PROGRESSO E CHAT DO BACKEND ---
   useEffect(() => {
     const fetchProgress = async () => {
+      if (!userId) return; // Não carrega se não tiver user
+      
       try {
-        const res = await fetch(`http://localhost:8080/api/progresso?id_usuario=${encodeURIComponent(userId)}`);
+        // === CORREÇÃO: Usar 'userId' no parametro da URL
+        const res = await fetch(`http://localhost:8080/api/progresso?userId=${encodeURIComponent(userId)}`);
         if (!res.ok) return;
+        
         const data = await res.json();
+        
+        // 1. Restaurar Missão Atual
         if (data.missao_atual) {
           setCurrentMission(data.missao_atual);
         } else if (data.ultima_missao) {
           setCurrentMission(data.ultima_missao);
-        } else {
-          setCurrentMission(DEFAULT_MISSION);
         }
+
+        // 2. Restaurar Status da Missão
         if (data.status_missao === 'CONCLUIDA') {
           setMissionStatus('complete');
         } else {
           setMissionStatus('incomplete');
         }
-      } catch {
-        // ignora erro silenciosamente
+
+        // === CORREÇÃO: Restaurar Histórico do Chat ===
+        if (data.historico_dialogos && Array.isArray(data.historico_dialogos) && data.historico_dialogos.length > 0) {
+          const loadedMsgs: ChatMessage[] = data.historico_dialogos.map((d: any) => ({
+            role: d.persona === 'user' ? 'user' : 'model',
+            text: d.texto,
+            persona: d.persona === 'user' ? undefined : d.persona
+          }));
+          
+          setChatMessages(loadedMsgs);
+          
+          setTimeout(() => {
+            if (chatContainerRef.current) {
+              chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+            }
+          }, 100);
+        } 
+        
+      } catch (error) {
+        console.error("Erro ao carregar progresso:", error);
       }
     };
+
     fetchProgress();
   }, [userId]);
 
+  // Função para salvar mensagens no backend
   const persistDialog = async (text: string, persona: PersonaKey | 'user') => {
     try {
       await fetch('http://localhost:8080/api/evento', {
@@ -235,7 +266,7 @@ export default function LabPage() {
         }),
       });
     } catch {
-      // silencia em dev
+      // silencia erro de rede
     }
   };
 
@@ -259,7 +290,7 @@ export default function LabPage() {
         void res.json();
       }
     } catch {
-      // silencia em dev
+      // silencia erro
     }
   };
 
@@ -270,18 +301,12 @@ export default function LabPage() {
       return;
     }
 
-    // Redireciona stdout/stderr do Pyodide para o terminal da UI.
     const stdout: string[] = [];
     const stderr: string[] = [];
 
-    pyodide.setStdout?.({
-      batched: (data: string) => stdout.push(data),
-    });
-    pyodide.setStderr?.({
-      batched: (data: string) => stderr.push(data),
-    });
+    pyodide.setStdout?.({ batched: (data: string) => stdout.push(data) });
+    pyodide.setStderr?.({ batched: (data: string) => stderr.push(data) });
 
-    // define input que usa prompt para testes rápidos
     pyodide.globals.set('__pyodide_input', (msg?: string) => {
       const val = window.prompt(msg ?? 'Digite um valor:');
       return val ?? '';
@@ -321,9 +346,10 @@ Não cite códigos de missão. Dê feedback curto, pedagógico e mencione o pró
 
   const sendPrompt = async (prompt: string, forcedPersona?: PersonaKey, silentUser?: boolean) => {
     if (!prompt.trim() || isStreaming) return;
-    // Decide a persona automaticamente conforme o fluxo.
     const persona = forcedPersona ?? pickAutoPersona(stage, lastPersonaRef.current);
     lastPersonaRef.current = persona;
+    
+    // Salva a mensagem do usuário no banco (se não for silenciosa)
     if (!silentUser) {
       void persistDialog(prompt, 'user');
     }
@@ -353,9 +379,7 @@ Não cite códigos de missão. Dê feedback curto, pedagógico e mencione o pró
     const allowedConcepts = MISSION_ALLOWED[currentMission] ?? MISSION_ALLOWED[DEFAULT_MISSION];
     const isFirstContact = !lastAttempt;
     const attemptContext = lastAttempt
-      ? `\n\nÚltima execução do aprendiz (avalie e dê feedback objetivo):\nMissão: ${currentMission}\nCódigo:\n${lastAttempt.code}\nSaída: ${lastAttempt.output.join(
-          ' | '
-        )}\nErro: ${lastAttempt.error ?? 'nenhum'}`
+      ? `\n\nÚltima execução do aprendiz (avalie e dê feedback objetivo):\nMissão: ${currentMission}\nCódigo:\n${lastAttempt.code}\nSaída: ${lastAttempt.output.join(' | ')}\nErro: ${lastAttempt.error ?? 'nenhum'}`
       : '';
 
     const onboarding = isFirstContact
@@ -407,7 +431,10 @@ Não cite códigos de missão. Dê feedback curto, pedagógico e mencione o pró
           return updated;
         });
       }
+      
+      // Salva a resposta do modelo no banco
       void persistDialog(assembled, persona);
+      
       if (missionStatus === 'awaiting_feedback') {
         setMissionStatus('complete');
         handleMissionCompletion(currentMission);
@@ -432,7 +459,6 @@ Não cite códigos de missão. Dê feedback curto, pedagógico e mencione o pró
     if (!chatInput.trim()) return;
     const prompt = chatInput.trim();
     if (prompt === FINAL_JUMP_KEYWORD) {
-      // Atalho de teste para saltar direto ao desafio final.
       setChatInput('');
       setModuleCompleted(false);
       setCurrentMission('M05_FINAL');
@@ -496,11 +522,11 @@ Não cite códigos de missão. Dê feedback curto, pedagógico e mencione o pró
 
       <NavbarLocal />
 
-      <main className="relative z-20 w-full h-full flex flex-col items-center justify-center px-4 py-6">
+      <main className="relative z-20 w-full h-full flex flex-col items-center justify-center !px-4 !py-6">
         <div className="w-full max-w-7xl flex flex-col gap-4 h-full">
           {moduleCompleted && (
             <div className="w-full flex justify-center">
-              <div className="px-4 py-2 rounded-full bg-green-600/80 text-white text-sm font-semibold shadow-lg shadow-green-900/30 border border-green-400/50">
+              <div className="!px-4 !py-2 rounded-full bg-green-600/80 text-white text-sm font-semibold shadow-lg shadow-green-900/30 border border-green-400/50">
                 Parabéns você concluiu o Módulo!
               </div>
             </div>
@@ -529,9 +555,10 @@ Não cite códigos de missão. Dê feedback curto, pedagógico e mencione o pró
 
                   return (
                     <div key={idx} className="group animate-fade-in-up w-full flex justify-center">
-                      <div className="w-full max-w-3xl flex flex-col gap-1 py-1 px-4 rounded-lg hover:bg-white/5 transition-colors duration-300">
+                      <div className="w-full max-w-3xl flex flex-col gap-1 !py-1 !px-4 rounded-lg hover:bg-white/5 transition-colors duration-300">
                         <span className={`text-sm font-bold font-mono uppercase tracking-wider ${nameColor}`}>
-                          {msg.role === 'user' ? 'Aprendiz' : name}
+                          {/* Usa o userId (que contém o email) ou 'Visitante' se não tiver email */}
+                          {msg.role === 'user' ? userId : name}
                         </span>
                         <p className="text-slate-200 text-sm md:text-base leading-relaxed font-light opacity-95 group-hover:opacity-100 whitespace-pre-wrap">
                           {content}
@@ -543,7 +570,7 @@ Não cite códigos de missão. Dê feedback curto, pedagógico e mencione o pró
                                 setCode(snippet);
                                 setStage('practice');
                               }}
-                              className="text-xs px-2 py-1 rounded bg-purple-700/60 text-white border border-purple-500/50 hover:bg-purple-600 transition-colors"
+                              className="text-xs !px-2 !py-1 rounded bg-purple-700/60 text-white border border-purple-500/50 hover:bg-purple-600 transition-colors"
                             >
                               Enviar código para IDE
                             </button>
@@ -554,7 +581,7 @@ Não cite códigos de missão. Dê feedback curto, pedagógico e mencione o pró
                   );
                 })}
                 {isStreaming && (
-                  <div className="flex items-center gap-2 px-2 opacity-50">
+                  <div className="flex items-center gap-2 !px-2 opacity-50">
                     <span className="text-purple-400 font-mono text-xs uppercase animate-pulse">Recebendo sinal...</span>
                   </div>
                 )}
@@ -572,7 +599,7 @@ Não cite códigos de missão. Dê feedback curto, pedagógico e mencione o pró
                     }
                   }}
                   placeholder={isStreaming ? 'O éter está ocupado...' : 'Fale seu destino... (Shift+Enter para nova linha)'}
-                  className="flex-1 bg-transparent border-none text-white placeholder-slate-500 focus:ring-0 resize-none min-h-[50px] max-h-[120px] py-3 px-4 text-base"
+                  className="flex-1 bg-transparent border-none text-white placeholder-slate-500 focus:ring-0 resize-none min-h-[50px] max-h-[120px] !py-3 !px-4 text-base"
                   disabled={isStreaming}
                   rows={1}
                 />
@@ -593,7 +620,7 @@ Não cite códigos de missão. Dê feedback curto, pedagógico e mencione o pró
 
             </div>
 
-            <div className="bg-[#0b1021]/85 border border-white/10 rounded-2xl p-4 backdrop-blur-lg shadow-2xl shadow-black/50 min-h-[60vh] flex flex-col gap-3">
+            <div className="bg-[#0b1021]/85 border border-white/10 rounded-2xl p-4 backdrop-blur-lg shadow-2xl shadow-black/50 min-h-[60vh] flex flex-col gap-3 !p-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 text-slate-200 font-semibold">
                   <Code2 className="w-4 h-4 text-purple-300" />
